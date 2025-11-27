@@ -342,6 +342,7 @@ class Configuration:
     FIRECRAWL_URL: Optional[str] = "https://api.firecrawl.dev"
     EXA_API_KEY: Optional[str] = None
     SEMANTIC_SCHOLAR_API_KEY: Optional[str] = None
+    MEMO_API_KEY: Optional[str] = None
     
     VAPI_PRIVATE_KEY: Optional[str] = None
     VAPI_PHONE_NUMBER_ID: Optional[str] = None

@@ -33,6 +33,7 @@ from core.tools.company_search_tool import CompanySearchTool
 from core.tools.paper_search_tool import PaperSearchTool
 from core.ai_models.manager import model_manager
 from core.tools.vapi_voice_tool import VapiVoiceTool
+from core.memory.memory_client import get_memory_client
 
 load_dotenv()
 
@@ -348,7 +349,8 @@ class PromptManager:
                                   client=None,
                                   tool_registry=None,
                                   xml_tool_calling: bool = True,
-                                  user_id: Optional[str] = None) -> dict:
+                                  user_id: Optional[str] = None,
+                                  latest_user_message: Optional[str] = None) -> dict:
         
         default_system_content = get_system_prompt()
         
@@ -410,6 +412,45 @@ class PromptManager:
             except Exception as e:
                 logger.error(f"Error retrieving knowledge base context for agent {agent_config.get('agent_id', 'unknown')}: {e}")
                 # Continue without knowledge base context rather than failing
+        
+        # Add memory context if available and user has sent a message
+        if latest_user_message and user_id:
+            try:
+                memory_client = get_memory_client()
+                
+                # Search for relevant memories based on the user's query
+                agent_id = agent_config.get('agent_id') if agent_config else None
+                relevant_memories = await memory_client.search(
+                    query=latest_user_message,
+                    user_id=user_id,
+                    agent_id=agent_id,
+                    limit=5
+                )
+                
+                if relevant_memories:
+                    logger.debug(f"Found {len(relevant_memories)} relevant memories for user {user_id}")
+                    
+                    # Format memories for system prompt
+                    memories_str = "\n".join(f"- {entry.get('memory', entry)}" for entry in relevant_memories)
+                    
+                    memory_section = f"""
+
+=== USER MEMORY ===
+The following are relevant memories from previous conversations with this user. Use these to provide personalized and context-aware responses.
+
+{memories_str}
+
+=== END USER MEMORY ===
+
+IMPORTANT: Use the memories above to personalize your responses and maintain context across conversations. Reference past interactions when relevant to the current query."""
+                    
+                    system_content += memory_section
+                else:
+                    logger.debug("No relevant memories found for this query")
+                    
+            except Exception as e:
+                logger.error(f"Error retrieving memory context for user {user_id}: {e}")
+                # Continue without memory context rather than failing
         
         if agent_config and (agent_config.get('configured_mcps') or agent_config.get('custom_mcps')) and mcp_wrapper_instance and mcp_wrapper_instance._initialized:
             mcp_info = "\n\n--- MCP Tools Available ---\n"
@@ -677,19 +718,7 @@ class AgentRunner:
         await self.setup_tools()
         mcp_wrapper_instance = await self.setup_mcp_tools()
         
-        system_message = await PromptManager.build_system_prompt(
-            self.config.model_name, self.config.agent_config, 
-            self.config.thread_id, 
-            mcp_wrapper_instance, self.client,
-            tool_registry=self.thread_manager.tool_registry,
-            xml_tool_calling=True,
-            user_id=self.account_id
-        )
-        logger.info(f"📝 System message built once: {len(str(system_message.get('content', '')))} chars")
-        logger.debug(f"model_name received: {self.config.model_name}")
-        iteration_count = 0
-        continue_execution = True
-
+        # Fetch latest user message first for memory context
         latest_user_message = await self.client.table('messages').select('*').eq('thread_id', self.config.thread_id).eq('type', 'user').order('created_at', desc=True).limit(1).execute()
         latest_user_message_content = None
         if latest_user_message.data and len(latest_user_message.data) > 0:
@@ -700,6 +729,22 @@ class AgentRunner:
                 self.config.trace.update(input=data['content'])
             # Extract content for fast path optimization
             latest_user_message_content = data.get('content') if isinstance(data, dict) else str(data)
+
+        # Build system message with memory context
+        system_message = await PromptManager.build_system_prompt(
+            self.config.model_name, self.config.agent_config, 
+            self.config.thread_id, 
+            mcp_wrapper_instance, self.client,
+            tool_registry=self.thread_manager.tool_registry,
+            xml_tool_calling=True,
+            user_id=self.account_id,
+            latest_user_message=latest_user_message_content
+        )
+        logger.info(f"📝 System message built once: {len(str(system_message.get('content', '')))} chars")
+        logger.debug(f"model_name received: {self.config.model_name}")
+        iteration_count = 0
+        continue_execution = True
+
 
         while continue_execution and iteration_count < self.config.max_iterations:
             iteration_count += 1
@@ -862,6 +907,27 @@ class AgentRunner:
             
             if generation:
                 generation.end()
+
+        # Store user message in memory after agent run completes
+        if self.account_id and latest_user_message_content:
+            try:
+                memory_client = get_memory_client()
+                
+                # Store just the user message - mem0 will extract relevant facts
+                agent_id = self.config.agent_config.get('agent_id') if self.config.agent_config else None
+                messages_for_memory = latest_user_message_content
+                
+                await memory_client.add(
+                    messages=messages_for_memory,
+                    user_id=self.account_id,
+                    agent_id=agent_id
+                )
+                logger.debug(f"Stored user message in memory for user {self.account_id}")
+                        
+            except Exception as e:
+                logger.error(f"Error storing message in memory: {e}")
+                # Don't fail the agent run if memory storage fails
+
 
         try:
             asyncio.create_task(asyncio.to_thread(lambda: langfuse.flush()))
