@@ -89,6 +89,7 @@ dependencies = [
   "reportlab>=4.0.0",
   "freestyle>=0.0.17",
   "anthropic>=0.69.0",
+  "mem0ai>=1.0.1",
 ]
 
 [project.urls]
@@ -100,5 +101,6 @@ package = false
 
 [dependency-groups]
 dev = [
+    "debugpy>=1.8.17",
     "orjson>=3.11.1",
 ]

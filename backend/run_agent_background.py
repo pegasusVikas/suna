@@ -23,6 +23,21 @@ from core.utils.retry import retry
 import sentry_sdk
 from typing import Dict, Any
 
+# Debugger setup for development
+DEBUG_DRAMATIQ = os.getenv('DEBUG_DRAMATIQ', 'false').lower() == 'true'
+if DEBUG_DRAMATIQ:
+    try:
+        import debugpy
+        # Use a different port for each process to avoid conflicts
+        debug_port = 5678 + int(os.getenv('DRAMATIQ_PROCESS_INDEX', '0'))
+        debugpy.listen(("0.0.0.0", debug_port))
+        logger.info(f"🐛 Debugger listening on port {debug_port}. Waiting for client to attach...")
+        # Wait for debugger to attach (comment out if you don't want to wait)
+        debugpy.wait_for_client()
+        logger.info(f"🐛 Debugger attached on port {debug_port}!")
+    except Exception as e:
+        logger.warning(f"Failed to start debugger: {e}")
+
 redis_host = os.getenv('REDIS_HOST', 'redis')
 redis_port = int(os.getenv('REDIS_PORT', 6379))
 
